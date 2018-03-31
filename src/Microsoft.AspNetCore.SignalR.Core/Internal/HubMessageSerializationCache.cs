@@ -5,6 +5,8 @@ using Microsoft.AspNetCore.SignalR.Internal.Protocol;
 
 namespace Microsoft.AspNetCore.SignalR.Internal
 {
+    // This class is created at the same time as the wrapping HubMessage and has the exact same lifetime as that message.
+    // See DefaultHubLifetimeManager.CreateInvocationMessage
     public class HubMessageSerializationCache
     {
         public HubMessage Message { get; }
