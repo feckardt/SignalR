@@ -5,6 +5,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.SignalR.Internal;
 using Microsoft.AspNetCore.SignalR.Internal.Protocol;
 using Microsoft.Extensions.Logging;
 
@@ -210,9 +211,9 @@ namespace Microsoft.AspNetCore.SignalR
             return Task.CompletedTask;
         }
 
-        private InvocationMessage CreateInvocationMessage(string methodName, object[] args)
+        private HubMessageSerializationCache CreateInvocationMessage(string methodName, object[] args)
         {
-            return new InvocationMessage(target: methodName, argumentBindingException: null, arguments: args);
+            return new HubMessageSerializationCache(new InvocationMessage(target: methodName, argumentBindingException: null, arguments: args));
         }
 
         public override Task SendUserAsync(string userId, string methodName, object[] args)

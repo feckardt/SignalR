@@ -6,19 +6,16 @@ using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.IO;
 using System.IO.Pipelines;
-using System.Net;
 using System.Runtime.ExceptionServices;
 using System.Security.Claims;
 using System.Threading;
 using System.Threading.Tasks;
-using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Connections;
 using Microsoft.AspNetCore.Connections.Features;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.SignalR.Core;
 using Microsoft.AspNetCore.SignalR.Internal;
-using Microsoft.AspNetCore.SignalR.Internal.Formatters;
 using Microsoft.AspNetCore.SignalR.Internal.Protocol;
 using Microsoft.Extensions.Logging;
 
@@ -105,16 +102,45 @@ namespace Microsoft.AspNetCore.SignalR
             return default;
         }
 
+        /// <summary>
+        /// This method is designed to support the framework and is not intended to be used by application code. Writes a message to the
+        /// connection, using the provided serialization cache to allow re-use of preserialized messages.
+        /// </summary>
+        /// <param name="serializationCache">The serialization cache to use.</param>
+        /// <returns></returns>
+        public virtual async ValueTask WriteAsync(HubMessageSerializationCache serializationCache)
+        {
+            // TODO: Refactor with WriteSlowAsync and friends. I think they can share most of the code since serialization is synchronous.
+
+            await _writeLock.WaitAsync();
+            try
+            {
+                // Get a serialized copy of the message. Since we're in the overload that takes the serialization
+                // cache, we know it's going to be worth it to get a heap buffer rather than writing directly to the
+                // pipe.
+                var buffer = serializationCache.GetSerializedMessage(Protocol);
+
+                _connectionContext.Transport.Output.Write(buffer.Span);
+
+                await _connectionContext.Transport.Output.FlushAsync();
+            }
+            catch (Exception ex)
+            {
+                Log.FailedWritingMessage(_logger, ex);
+            }
+            finally
+            {
+                _writeLock.Release();
+            }
+        }
+
         private ValueTask<FlushResult> WriteCore(HubMessage message)
         {
             try
             {
-                // This will internally cache the buffer for each unique HubProtocol
-                // So that we don't serialize the HubMessage for every single connection
-                var buffer = message.WriteMessage(Protocol);
-
-                var output = _connectionContext.Transport.Output;
-                output.Write(buffer);
+                // We know that we are only writing this message to one receiver, so we can
+                // write it without caching.
+                Protocol.WriteMessage(message, _connectionContext.Transport.Output);
 
                 return output.FlushAsync();
             }
