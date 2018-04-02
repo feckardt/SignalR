@@ -1,6 +1,9 @@
 using System;
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Text;
 
 namespace Microsoft.AspNetCore.SignalR.Internal
 {
@@ -76,6 +79,42 @@ namespace Microsoft.AspNetCore.SignalR.Internal
                 buf[0] = 0xC6;
                 BinaryPrimitives.TryWriteUInt32BigEndian(buf.Slice(1, 4), (ushort)count);
                 writer.Write(buf);
+            }
+        }
+
+        private static readonly int StackPathMaxCharacterCount = 32;
+        private const int MaxBytesPerUtf8Character = 4;
+        public static void WriteUtf8(IBufferWriter<byte> writer, string value)
+        {
+            if (value.Length > StackPathMaxCharacterCount)
+            {
+                // Slow path, we will never get here in our usage of this type because
+                // our protocol names are short.
+                var bytes = Encoding.UTF8.GetBytes(value);
+                WriteStringHeader(writer, bytes.Length);
+                writer.Write(bytes);
+            }
+            else
+            {
+                unsafe
+                {
+                    // Faster path, we know we'll need less than 128 bytes to encode, so we can
+                    // use a stack buffer to marshal the data (and get the length)
+                    Span<byte> bytes = stackalloc byte[value.Length * MaxBytesPerUtf8Character];
+#if NETCOREAPP2_1
+                    var size = Encoding.UTF8.GetBytes(value.AsSpan(), bytes);
+                    bytes = bytes.Slice(0, size);
+#else
+                    fixed (byte* bytePtr = &MemoryMarshal.GetReference(bytes))
+                    fixed (char* charPtr = value)
+                    {
+                        var size = Encoding.UTF8.GetBytes(charPtr, value.Length, bytePtr, bytes.Length);
+                        bytes = bytes.Slice(0, size);
+                    }
+#endif
+                    writer.Write(bytes);
+                }
+
             }
         }
     }
