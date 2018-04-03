@@ -2,6 +2,9 @@ using System;
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Runtime.InteropServices;
 using Microsoft.AspNetCore.SignalR.Internal.Protocol;
 
 namespace Microsoft.AspNetCore.SignalR.Internal
@@ -17,6 +20,10 @@ namespace Microsoft.AspNetCore.SignalR.Internal
         private IDictionary<string, byte[]> _cachedItems;
 
         public HubMessage Message { get; }
+
+        private HubMessageSerializationCache()
+        {
+        }
 
         public HubMessageSerializationCache(HubMessage message)
         {
@@ -40,29 +47,52 @@ namespace Microsoft.AspNetCore.SignalR.Internal
             return serialized;
         }
 
-        public void WriteAllSerializedVersions(IBufferWriter<byte> writer, IReadOnlyList<IHubProtocol> protocols)
+        public void WriteAllSerializedVersions(BinaryWriter writer, IReadOnlyList<IHubProtocol> protocols)
         {
-            // We use MsgPack, but not a MsgPack serialization library. The format is just fine for us, so we may as well
-            // use something simple.
+            // The serialization format is based on BinaryWriter
+            // * 1 byte number of protocols
+            // * For each protocol:
+            //   * Length-prefixed string using 7-bit variable length encoding (length depends on BinaryWriter's encoding)
+            //   * 4 byte length of the buffer
+            //   * N byte buffer
 
-            MiniMsgPack.WriteMapHeader(writer, protocols.Count);
+            if (protocols.Count > byte.MaxValue)
+            {
+                throw new InvalidOperationException($"Can't serialize cache containing more than {byte.MaxValue} entries");
+            }
+
+            writer.Write((byte)protocols.Count);
             foreach (var protocol in protocols)
             {
-                MiniMsgPack.WriteUtf8(writer, protocol.Name);
+                writer.Write(protocol.Name);
 
                 var buffer = GetSerializedMessage(protocol);
-                MiniMsgPack.WriteBinHeader(writer, buffer.Length);
+                writer.Write(buffer.Length);
+#if NETCOREAPP2_1
                 writer.Write(buffer);
+#else
+                // We always use arrays so this should always succeed.
+                var isArray = MemoryMarshal.TryGetArray(buffer, out var arraySegment);
+                Debug.Assert(isArray);
+                writer.Write(arraySegment.Array, arraySegment.Offset, arraySegment.Count);
+#endif
             }
         }
 
-        public static HubMessageSerializationCache ReadAllSerializedVersions(ref ReadOnlySequence<byte> buffer)
+        public static HubMessageSerializationCache ReadAllSerializedVersions(BinaryReader reader)
         {
-            // This will return a cache with a null Message. But that's OK because GetSerializedMessage will return
-            // values without having to serialize.
-            throw new NotImplementedException();
-        }
+            var cache = new HubMessageSerializationCache();
+            var count = reader.ReadByte();
+            for (var i = 0; i < count; i++)
+            {
+                var protocol = reader.ReadString();
+                var length = reader.ReadInt32();
+                var serialized = reader.ReadBytes(length);
+                cache.SetCache(protocol, serialized);
+            }
 
+            return cache;
+        }
 
         private void SetCache(string protocolName, byte[] serialized)
         {

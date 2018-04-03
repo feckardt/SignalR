@@ -9,7 +9,7 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using Microsoft.AspNetCore.Internal;
+using Microsoft.AspNetCore.SignalR.Internal;
 using Microsoft.AspNetCore.SignalR.Internal.Protocol;
 using Microsoft.AspNetCore.SignalR.Redis.Internal;
 using Microsoft.Extensions.Logging;
@@ -19,7 +19,7 @@ using StackExchange.Redis;
 
 namespace Microsoft.AspNetCore.SignalR.Redis
 {
-    public class RedisHubLifetimeManager<THub> : HubLifetimeManager<THub>, IDisposable where THub : Hub
+    public partial class RedisHubLifetimeManager<THub> : HubLifetimeManager<THub>, IDisposable where THub : Hub
     {
         private readonly HubConnectionStore _connections = new HubConnectionStore();
         // TODO: Investigate "memory leak" entries never get removed
@@ -28,8 +28,9 @@ namespace Microsoft.AspNetCore.SignalR.Redis
         private readonly ISubscriber _bus;
         private readonly ILogger _logger;
         private readonly RedisOptions _options;
-        private readonly string _channelNamePrefix = typeof(THub).FullName;
-        private readonly string _serverName = Guid.NewGuid().ToString();
+        private readonly RedisChannels _channels;
+        private readonly string _serverName = GenerateServerName();
+
         private readonly AckHandler _ackHandler;
         private int _internalId;
 
@@ -46,9 +47,10 @@ namespace Microsoft.AspNetCore.SignalR.Redis
             _logger = logger;
             _options = options.Value;
             _ackHandler = new AckHandler();
+            _channels = new RedisChannels(typeof(THub).FullName);
 
             var writer = new LoggerTextWriter(logger);
-            _logger.ConnectingToEndpoints(options.Value.Options.EndPoints);
+            Log.ConnectingToEndpoints(_logger, options.Value.Options.EndPoints, _serverName);
             _redisServerConnection = _options.Connect(writer);
 
             _redisServerConnection.ConnectionRestored += (_, e) =>
@@ -60,7 +62,7 @@ namespace Microsoft.AspNetCore.SignalR.Redis
                     return;
                 }
 
-                _logger.ConnectionRestored();
+                Log.ConnectionRestored(_logger);
             };
 
             _redisServerConnection.ConnectionFailed += (_, e) =>
@@ -72,23 +74,22 @@ namespace Microsoft.AspNetCore.SignalR.Redis
                     return;
                 }
 
-                _logger.ConnectionFailed(e.Exception);
+                Log.ConnectionFailed(_logger, e.Exception);
             };
 
             if (_redisServerConnection.IsConnected)
             {
-                _logger.Connected();
+                Log.Connected(_logger);
             }
             else
             {
-                _logger.NotConnected();
+                Log.NotConnected(_logger);
             }
             _bus = _redisServerConnection.GetSubscriber();
 
-            SubscribeToHub();
-            SubscribeToAllExcept();
-            SubscribeToInternalGroup();
-            SubscribeToInternalServerName();
+            SubscribeToAll();
+            SubscribeToGroupManagementChannel();
+            SubscribeToAckChannel();
         }
 
         public override Task OnConnectedAsync(HubConnectionContext connection)
@@ -125,7 +126,7 @@ namespace Microsoft.AspNetCore.SignalR.Redis
             {
                 foreach (var subscription in redisSubscriptions)
                 {
-                    _logger.Unsubscribe(subscription);
+                    Log.Unsubscribe(_logger, subscription);
                     tasks.Add(_bus.UnsubscribeAsync(subscription));
                 }
             }
@@ -149,15 +150,14 @@ namespace Microsoft.AspNetCore.SignalR.Redis
 
         public override Task SendAllAsync(string methodName, object[] args)
         {
-            var message = new RedisInvocationMessage(target: methodName, arguments: args);
-
-            return PublishAsync(_channelNamePrefix, message);
+            var message = RedisProtocol.WriteInvocation(RedisInvocation.Create(methodName, args));
+            return PublishAsync(_channels.All, message);
         }
 
         public override Task SendAllExceptAsync(string methodName, object[] args, IReadOnlyList<string> excludedIds)
         {
-            var message = new RedisInvocationMessage(target: methodName, excludedIds: excludedIds, arguments: args);
-            return PublishAsync(_channelNamePrefix + ".AllExcept", message);
+            var message = RedisProtocol.WriteInvocation(RedisInvocation.Create(methodName, args, excludedIds));
+            return PublishAsync(_channels.All, message);
         }
 
         public override Task SendConnectionAsync(string connectionId, string methodName, object[] args)
@@ -167,17 +167,16 @@ namespace Microsoft.AspNetCore.SignalR.Redis
                 throw new ArgumentNullException(nameof(connectionId));
             }
 
-            var message = new RedisInvocationMessage(target: methodName, arguments: args);
-
             // If the connection is local we can skip sending the message through the bus since we require sticky connections.
             // This also saves serializing and deserializing the message!
             var connection = _connections[connectionId];
             if (connection != null)
             {
-                return SafeWriteAsync(connection, message.CreateInvocation());
+                return SafeWriteAsync(connection, new InvocationMessage(methodName, argumentBindingException: null, args));
             }
 
-            return PublishAsync(_channelNamePrefix + "." + connectionId, message);
+            var message = RedisProtocol.WriteInvocation(RedisInvocation.Create(methodName, args));
+            return PublishAsync(_channels.Connection(connectionId), message);
         }
 
         public override Task SendGroupAsync(string groupName, string methodName, object[] args)
@@ -187,9 +186,8 @@ namespace Microsoft.AspNetCore.SignalR.Redis
                 throw new ArgumentNullException(nameof(groupName));
             }
 
-            var message = new RedisInvocationMessage(target: methodName, excludedIds: null, arguments: args);
-
-            return PublishAsync(_channelNamePrefix + ".group." + groupName, message);
+            var message = RedisProtocol.WriteInvocation(RedisInvocation.Create(methodName, args));
+            return PublishAsync(_channels.Group(groupName), message);
         }
 
         public override Task SendGroupExceptAsync(string groupName, string methodName, object[] args, IReadOnlyList<string> excludedIds)
@@ -199,31 +197,14 @@ namespace Microsoft.AspNetCore.SignalR.Redis
                 throw new ArgumentNullException(nameof(groupName));
             }
 
-            var message = new RedisInvocationMessage(methodName, excludedIds, args);
-
-            return PublishAsync(_channelNamePrefix + ".group." + groupName, message);
+            var message = RedisProtocol.WriteInvocation(RedisInvocation.Create(methodName, args, excludedIds));
+            return PublishAsync(_channels.Group(groupName), message);
         }
 
         public override Task SendUserAsync(string userId, string methodName, object[] args)
         {
-            var message = new RedisInvocationMessage(methodName, args);
-
-            return PublishAsync(_channelNamePrefix + ".user." + userId, message);
-        }
-
-        private async Task PublishAsync(string channel, IRedisMessage message)
-        {
-            byte[] payload;
-            using (var stream = new LimitArrayPoolWriteStream())
-            using (var writer = JsonUtils.CreateJsonTextWriter(new StreamWriter(stream)))
-            {
-                _serializer.Serialize(writer, message);
-                writer.Flush();
-                payload = stream.ToArray();
-            }
-
-            _logger.PublishToChannel(channel);
-            await _bus.PublishAsync(channel, payload);
+            var message = RedisProtocol.WriteInvocation(RedisInvocation.Create(methodName, args));
+            return PublishAsync(_channels.User(userId), message);
         }
 
         public override async Task AddGroupAsync(string connectionId, string groupName)
@@ -247,42 +228,6 @@ namespace Microsoft.AspNetCore.SignalR.Redis
             }
 
             await SendGroupActionAndWaitForAck(connectionId, groupName, GroupAction.Add);
-        }
-
-        private async Task AddGroupAsyncCore(HubConnectionContext connection, string groupName)
-        {
-            var feature = connection.Features.Get<IRedisFeature>();
-            var groupNames = feature.Groups;
-
-            lock (groupNames)
-            {
-                // Connection already in group
-                if (!groupNames.Add(groupName))
-                {
-                    return;
-                }
-            }
-
-            var groupChannel = _channelNamePrefix + ".group." + groupName;
-            var group = _groups.GetOrAdd(groupChannel, _ => new GroupData());
-
-            await group.Lock.WaitAsync();
-            try
-            {
-                group.Connections.Add(connection);
-
-                // Subscribe once
-                if (group.Connections.Count > 1)
-                {
-                    return;
-                }
-
-                await SubscribeToGroup(groupChannel, group);
-            }
-            finally
-            {
-                group.Lock.Release();
-            }
         }
 
         public override async Task RemoveGroupAsync(string connectionId, string groupName)
@@ -309,13 +254,129 @@ namespace Microsoft.AspNetCore.SignalR.Redis
             await SendGroupActionAndWaitForAck(connectionId, groupName, GroupAction.Remove);
         }
 
+        public override Task SendConnectionsAsync(IReadOnlyList<string> connectionIds, string methodName, object[] args)
+        {
+            if (connectionIds == null)
+            {
+                throw new ArgumentNullException(nameof(connectionIds));
+            }
+            var publishTasks = new List<Task>(connectionIds.Count);
+            var invocation = RedisInvocation.Create(methodName, args);
+
+            byte[] payload = null;
+
+            foreach (string connectionId in connectionIds)
+            {
+                var connection = _connections[connectionId];
+                // If the connection is local we can skip sending the message through the bus since we require sticky connections.
+                // This also saves serializing and deserializing the message!
+                if (connection != null)
+                {
+                    publishTasks.Add(SafeWriteAsync(connection, invocation.Message));
+                }
+                else
+                {
+                    if (payload == null)
+                    {
+                        payload = RedisProtocol.WriteInvocation(invocation);
+                    }
+
+                    publishTasks.Add(PublishAsync(_channels.Connection(connectionId), payload));
+                }
+            }
+
+            return Task.WhenAll(publishTasks);
+        }
+
+        public override Task SendGroupsAsync(IReadOnlyList<string> groupNames, string methodName, object[] args)
+        {
+            if (groupNames == null)
+            {
+                throw new ArgumentNullException(nameof(groupNames));
+            }
+            var publishTasks = new List<Task>(groupNames.Count);
+            var payload = RedisProtocol.WriteInvocation(RedisInvocation.Create(methodName, args));
+
+            foreach (var groupName in groupNames)
+            {
+                if (!string.IsNullOrEmpty(groupName))
+                {
+                    publishTasks.Add(PublishAsync(_channels.Group(groupName), payload));
+                }
+            }
+
+            return Task.WhenAll(publishTasks);
+        }
+
+        public override Task SendUsersAsync(IReadOnlyList<string> userIds, string methodName, object[] args)
+        {
+            if (userIds.Count > 0)
+            {
+                var payload = RedisProtocol.WriteInvocation(RedisInvocation.Create(methodName, args));
+                var publishTasks = new List<Task>(userIds.Count);
+                foreach (var userId in userIds)
+                {
+                    if (!string.IsNullOrEmpty(userId))
+                    {
+                        publishTasks.Add(PublishAsync(_channels.User(userId), payload));
+                    }
+                }
+
+                return Task.WhenAll(publishTasks);
+            }
+
+            return Task.CompletedTask;
+        }
+
+        private async Task PublishAsync(string channel, byte[] payload)
+        {
+            Log.PublishToChannel(_logger, channel);
+            await _bus.PublishAsync(channel, payload);
+        }
+
+        private async Task AddGroupAsyncCore(HubConnectionContext connection, string groupName)
+        {
+            var feature = connection.Features.Get<IRedisFeature>();
+            var groupNames = feature.Groups;
+
+            lock (groupNames)
+            {
+                // Connection already in group
+                if (!groupNames.Add(groupName))
+                {
+                    return;
+                }
+            }
+
+            var groupChannel = _channels.Group(groupName);
+            var group = _groups.GetOrAdd(groupName, _ => new GroupData());
+
+            await group.Lock.WaitAsync();
+            try
+            {
+                group.Connections.Add(connection);
+
+                // Subscribe once
+                if (group.Connections.Count > 1)
+                {
+                    return;
+                }
+
+                await SubscribeToGroup(groupChannel, group);
+            }
+            finally
+            {
+                group.Lock.Release();
+            }
+        }
+
         /// <summary>
         /// This takes <see cref="HubConnectionContext"/> because we want to remove the connection from the
         /// _connections list in OnDisconnectedAsync and still be able to remove groups with this method.
         /// </summary>
         private async Task RemoveGroupAsyncCore(HubConnectionContext connection, string groupName)
         {
-            var groupChannel = _channelNamePrefix + ".group." + groupName;
+            var groupChannel = _channels.Group(groupName);
 
             if (!_groups.TryGetValue(groupChannel, out var group))
             {
@@ -341,7 +402,7 @@ namespace Microsoft.AspNetCore.SignalR.Redis
 
                     if (group.Connections.Count == 0)
                     {
-                        _logger.Unsubscribe(groupChannel);
+                        Log.Unsubscribe(_logger, groupChannel);
                         await _bus.UnsubscribeAsync(groupChannel);
                     }
                 }
@@ -350,8 +411,6 @@ namespace Microsoft.AspNetCore.SignalR.Redis
             {
                 group.Lock.Release();
             }
-
-            return;
         }
 
         private async Task SendGroupActionAndWaitForAck(string connectionId, string groupName, GroupAction action)
@@ -359,14 +418,8 @@ namespace Microsoft.AspNetCore.SignalR.Redis
             var id = Interlocked.Increment(ref _internalId);
             var ack = _ackHandler.CreateAck(id);
             // Send Add/Remove Group to other servers and wait for an ack or timeout
-            await PublishAsync(_channelNamePrefix + ".internal.group", new RedisGroupMessage
-            {
-                Action = action,
-                ConnectionId = connectionId,
-                Group = groupName,
-                Id = id,
-                Server = _serverName
-            });
+            var message = RedisProtocol.WriteGroupCommand(new RedisGroupCommand(id, _serverName, action, groupName, connectionId));
+            await PublishAsync(_channels.GroupManagement, message);
 
             await ack;
         }
@@ -386,55 +439,24 @@ namespace Microsoft.AspNetCore.SignalR.Redis
             }
         }
 
-        private void SubscribeToHub()
+        private void SubscribeToAll()
         {
-            _logger.Subscribing(_channelNamePrefix);
-            _bus.Subscribe(_channelNamePrefix, async (c, data) =>
+            Log.Subscribing(_logger, _channels.All);
+            _bus.Subscribe(_channels.All, async (c, data) =>
             {
                 try
                 {
-                    _logger.ReceivedFromChannel(_channelNamePrefix);
+                    Log.ReceivedFromChannel(_logger, _channels.All);
 
-                    var message = DeserializeMessage<RedisInvocationMessage>(data);
-
-                    var tasks = new List<Task>(_connections.Count);
-
-                    var invocation = message.CreateInvocation();
-                    foreach (var connection in _connections)
-                    {
-                        tasks.Add(SafeWriteAsync(connection, invocation));
-                    }
-
-                    await Task.WhenAll(tasks);
-                }
-                catch (Exception ex)
-                {
-                    _logger.FailedWritingMessage(ex);
-                }
-            });
-        }
-
-        private void SubscribeToAllExcept()
-        {
-            var channelName = _channelNamePrefix + ".AllExcept";
-            _logger.Subscribing(channelName);
-            _bus.Subscribe(channelName, async (c, data) =>
-            {
-                try
-                {
-                    _logger.ReceivedFromChannel(channelName);
-
-                    var message = DeserializeMessage<RedisInvocationMessage>(data);
-                    var excludedIds = message.ExcludedIds ?? Array.Empty<string>();
+                    var invocation = RedisProtocol.ReadInvocation(data);
 
                     var tasks = new List<Task>(_connections.Count);
 
-                    var invocation = message.CreateInvocation();
                     foreach (var connection in _connections)
                     {
-                        if (!excludedIds.Contains(connection.ConnectionId))
+                        if (invocation.ExcludedIds == null || invocation.ExcludedIds.Contains(connection.ConnectionId))
                         {
-                            tasks.Add(SafeWriteAsync(connection, invocation));
+                            tasks.Add(SafeWriteAsync(connection, invocation.Message));
                         }
                     }
 
@@ -442,19 +464,18 @@ namespace Microsoft.AspNetCore.SignalR.Redis
                 }
                 catch (Exception ex)
                 {
-                    _logger.FailedWritingMessage(ex);
+                    Log.FailedWritingMessage(_logger, ex);
                 }
             });
         }
 
-        private void SubscribeToInternalGroup()
+        private void SubscribeToGroupManagementChannel()
         {
-            var channelName = _channelNamePrefix + ".internal.group";
-            _bus.Subscribe(channelName, async (c, data) =>
+            _bus.Subscribe(_channels.GroupManagement, async (c, data) =>
             {
                 try
                 {
-                    var groupMessage = DeserializeMessage<RedisGroupMessage>(data);
+                    var groupMessage = RedisProtocol.ReadGroupCommand(data);
 
                     var connection = _connections[groupMessage.ConnectionId];
                     if (connection == null)
@@ -465,170 +486,92 @@ namespace Microsoft.AspNetCore.SignalR.Redis
 
                     if (groupMessage.Action == GroupAction.Remove)
                     {
-                        await RemoveGroupAsyncCore(connection, groupMessage.Group);
+                        await RemoveGroupAsyncCore(connection, groupMessage.GroupName);
                     }
 
                     if (groupMessage.Action == GroupAction.Add)
                     {
-                        await AddGroupAsyncCore(connection, groupMessage.Group);
+                        await AddGroupAsyncCore(connection, groupMessage.GroupName);
                     }
 
-                    // Sending ack to server that sent the original add/remove
-                    await PublishAsync($"{_channelNamePrefix}.internal.{groupMessage.Server}", new RedisGroupMessage
-                    {
-                        Action = GroupAction.Ack,
-                        Id = groupMessage.Id
-                    });
+                    // Send an ack to the server that sent the original command.
+                    await PublishAsync(_channels.Ack(groupMessage.ServerName), RedisProtocol.WriteAck(groupMessage.Id));
                 }
                 catch (Exception ex)
                 {
-                    _logger.InternalMessageFailed(ex);
+                    Log.InternalMessageFailed(_logger, ex);
                 }
             });
         }
 
-        private void SubscribeToInternalServerName()
+        private void SubscribeToAckChannel()
         {
             // Create server specific channel in order to send an ack to a single server
-            var serverChannel = $"{_channelNamePrefix}.internal.{_serverName}";
-            _bus.Subscribe(serverChannel, (c, data) =>
+            _bus.Subscribe(_channels.Ack(_serverName), (c, data) =>
             {
-                var groupMessage = DeserializeMessage<RedisGroupMessage>(data);
+                var ackId = RedisProtocol.ReadAck(data);
 
-                if (groupMessage.Action == GroupAction.Ack)
-                {
-                    _ackHandler.TriggerAck(groupMessage.Id);
-                }
+                _ackHandler.TriggerAck(ackId);
             });
         }
 
         private Task SubscribeToConnection(HubConnectionContext connection, HashSet<string> redisSubscriptions)
         {
-            var connectionChannel = _channelNamePrefix + "." + connection.ConnectionId;
+            var connectionChannel = _channels.Connection(connection.ConnectionId);
             redisSubscriptions.Add(connectionChannel);
 
-            _logger.Subscribing(connectionChannel);
+            Log.Subscribing(_logger, connectionChannel);
             return _bus.SubscribeAsync(connectionChannel, async (c, data) =>
             {
-                var message = DeserializeMessage<RedisInvocationMessage>(data);
-
-                await SafeWriteAsync(connection, message.CreateInvocation());
+                var invocation = RedisProtocol.ReadInvocation(data);
+                await SafeWriteAsync(connection, invocation.Message);
             });
         }
 
         private Task SubscribeToUser(HubConnectionContext connection, HashSet<string> redisSubscriptions)
         {
-            var userChannel = _channelNamePrefix + ".user." + connection.UserIdentifier;
+            var userChannel = _channels.User(connection.UserIdentifier);
             redisSubscriptions.Add(userChannel);
 
             // TODO: Look at optimizing (looping over connections checking for Name)
             return _bus.SubscribeAsync(userChannel, async (c, data) =>
             {
-                var message = DeserializeMessage<RedisInvocationMessage>(data);
-
-                await SafeWriteAsync(connection, message.CreateInvocation());
+                var invocation = RedisProtocol.ReadInvocation(data);
+                await SafeWriteAsync(connection, invocation.Message);
             });
         }
 
         private Task SubscribeToGroup(string groupChannel, GroupData group)
         {
-            _logger.Subscribing(groupChannel);
+            Log.Subscribing(_logger, groupChannel);
             return _bus.SubscribeAsync(groupChannel, async (c, data) =>
             {
                 try
                 {
-                    var message = DeserializeMessage<RedisInvocationMessage>(data);
+                    var invocation = RedisProtocol.ReadInvocation(data);
 
                     var tasks = new List<Task>();
-                    var invocation = message.CreateInvocation();
                     foreach (var groupConnection in group.Connections)
                     {
-                        if (message.ExcludedIds?.Contains(groupConnection.ConnectionId) == true)
+                        if (invocation.ExcludedIds?.Contains(groupConnection.ConnectionId) == true)
                         {
                             continue;
                         }
 
-                        tasks.Add(SafeWriteAsync(groupConnection, invocation));
+                        tasks.Add(SafeWriteAsync(groupConnection, invocation.Message));
                     }
 
                     await Task.WhenAll(tasks);
                 }
                 catch (Exception ex)
                 {
-                    _logger.FailedWritingMessage(ex);
+                    Log.FailedWritingMessage(_logger, ex);
                 }
             });
         }
 
-        public override Task SendConnectionsAsync(IReadOnlyList<string> connectionIds, string methodName, object[] args)
-        {
-            if (connectionIds == null)
-            {
-                throw new ArgumentNullException(nameof(connectionIds));
-            }
-            var publishTasks = new List<Task>(connectionIds.Count);
-            var message = new RedisInvocationMessage(target: methodName, arguments: args);
-
-            foreach (string connectionId in connectionIds)
-            {
-                var connection = _connections[connectionId];
-                // If the connection is local we can skip sending the message through the bus since we require sticky connections.
-                // This also saves serializing and deserializing the message!
-                if (connection != null)
-                {
-                    publishTasks.Add(SafeWriteAsync(connection, message.CreateInvocation()));
-                }
-                else
-                {
-                    publishTasks.Add(PublishAsync(_channelNamePrefix + "." + connectionId, message));
-                }
-            }
-
-            return Task.WhenAll(publishTasks);
-        }
-
-        public override Task SendGroupsAsync(IReadOnlyList<string> groupNames, string methodName, object[] args)
-        {
-            if (groupNames == null)
-            {
-                throw new ArgumentNullException(nameof(groupNames));
-            }
-            var publishTasks = new List<Task>(groupNames.Count);
-            var message = new RedisInvocationMessage(target: methodName, arguments: args);
-
-            foreach (var groupName in groupNames)
-            {
-                if (!string.IsNullOrEmpty(groupName))
-                {
-                    publishTasks.Add(PublishAsync(_channelNamePrefix + "." + groupName, message));
-                }
-            }
-
-            return Task.WhenAll(publishTasks);
-        }
-
-        public override Task SendUsersAsync(IReadOnlyList<string> userIds, string methodName, object[] args)
-        {
-            if (userIds.Count > 0)
-            {
-                var message = new RedisInvocationMessage(methodName, args);
-                var publishTasks = new List<Task>(userIds.Count);
-                foreach (var userId in userIds)
-                {
-                    if (!string.IsNullOrEmpty(userId))
-                    {
-                        publishTasks.Add(PublishAsync(_channelNamePrefix + ".user." + userId, message));
-                    }
-                }
-
-                return Task.WhenAll(publishTasks);
-            }
-
-            return Task.CompletedTask;
-        }
-
-        // This method is to protect against connections throwing synchronously when writing to them and preventing other connections from being written to
-        private async Task SafeWriteAsync(HubConnectionContext connection, InvocationMessage message)
+        // This methods are to protect against connections throwing synchronously when writing to them and preventing other connections from being written to
+        private async Task SafeWriteAsync(HubConnectionContext connection, HubMessageSerializationCache message)
         {
             try
             {
@@ -636,8 +579,27 @@ namespace Microsoft.AspNetCore.SignalR.Redis
             }
             catch (Exception ex)
             {
-                _logger.FailedWritingMessage(ex);
+                Log.FailedWritingMessage(_logger, ex);
             }
+        }
+
+        private async Task SafeWriteAsync(HubConnectionContext connection, HubMessage message)
+        {
+            try
+            {
+                await connection.WriteAsync(message);
+            }
+            catch (Exception ex)
+            {
+                Log.FailedWritingMessage(_logger, ex);
+            }
+        }
+
+        private static string GenerateServerName()
+        {
+            // Use the machine name for convenience diagnostics, but add a guid to make it unique.
+            // Example: MyServerName_02db60e5fab243b890a847fa5c4dcb29
+            return $"{Environment.MachineName}_{Guid.NewGuid():N}";
         }
 
         private class LoggerTextWriter : TextWriter
@@ -658,7 +620,7 @@ namespace Microsoft.AspNetCore.SignalR.Redis
 
             public override void WriteLine(string value)
             {
-                _logger.LogDebug(value);
+                Log.ConnectionMultiplexerMessage(_logger, value);
             }
         }
 
@@ -678,54 +640,6 @@ namespace Microsoft.AspNetCore.SignalR.Redis
         {
             public HashSet<string> Subscriptions { get; } = new HashSet<string>();
             public HashSet<string> Groups { get; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        }
-
-        private enum GroupAction
-        {
-            Remove,
-            Add,
-            Ack
-        }
-
-        // Marker interface to represent the messages that can be sent over Redis.
-        private interface IRedisMessage { }
-
-        private class RedisGroupMessage : IRedisMessage
-        {
-            public string ConnectionId { get; set; }
-            public string Group { get; set; }
-            public int Id { get; set; }
-            public GroupAction Action { get; set; }
-            public string Server { get; set; }
-        }
-
-        // Represents a message published to the Redis bus
-        private class RedisInvocationMessage : IRedisMessage
-        {
-            public string Target { get; set; }
-            public IReadOnlyList<string> ExcludedIds { get; set; }
-            public object[] Arguments { get; set; }
-
-            public RedisInvocationMessage()
-            {
-            }
-
-            public RedisInvocationMessage(string target, object[] arguments)
-                : this(target, excludedIds: null, arguments: arguments)
-            {
-            }
-
-            public RedisInvocationMessage(string target, IReadOnlyList<string> excludedIds, object[] arguments)
-            {
-                Target = target;
-                ExcludedIds = excludedIds;
-                Arguments = arguments;
-            }
-
-            public InvocationMessage CreateInvocation()
-            {
-                return new InvocationMessage(Target, argumentBindingException: null, arguments: Arguments);
-            }
         }
     }
 }
