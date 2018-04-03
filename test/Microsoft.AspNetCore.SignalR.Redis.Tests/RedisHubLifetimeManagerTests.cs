@@ -41,6 +41,33 @@ namespace Microsoft.AspNetCore.SignalR.Redis.Tests
         }
 
         [Fact]
+        public async Task InvokeAllExceptAsyncExcludesSpecifiedConnections()
+        {
+            using (var client1 = new TestClient())
+            using (var client2 = new TestClient())
+            using (var client3 = new TestClient())
+            {
+                var manager1 = CreateLifetimeManager();
+                var manager2 = CreateLifetimeManager();
+                var manager3 = CreateLifetimeManager();
+
+                var connection1 = HubConnectionContextUtils.Create(client1.Connection);
+                var connection2 = HubConnectionContextUtils.Create(client2.Connection);
+                var connection3 = HubConnectionContextUtils.Create(client3.Connection);
+
+                await manager1.OnConnectedAsync(connection1).OrTimeout();
+                await manager2.OnConnectedAsync(connection2).OrTimeout();
+                await manager3.OnConnectedAsync(connection3).OrTimeout();
+
+                await manager1.SendAllExceptAsync("Hello", new object[] { "World" }, new [] { client3.Connection.ConnectionId }).OrTimeout();
+
+                await AssertMessageAsync(client1);
+                await AssertMessageAsync(client2);
+                Assert.Null(client3.TryRead());
+            }
+        }
+
+        [Fact]
         public async Task InvokeAllAsyncDoesNotWriteToDisconnectedConnectionsOutput()
         {
             using (var client1 = new TestClient())
