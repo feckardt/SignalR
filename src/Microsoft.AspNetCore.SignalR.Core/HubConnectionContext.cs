@@ -108,7 +108,7 @@ namespace Microsoft.AspNetCore.SignalR
         /// </summary>
         /// <param name="serializationCache">The serialization cache to use.</param>
         /// <returns></returns>
-        public virtual async ValueTask WriteAsync(HubMessageSerializationCache serializationCache)
+        public virtual async ValueTask WriteAsync(SerializedHubMessage serializationCache)
         {
             // TODO: Refactor with WriteSlowAsync and friends. I think they can share most of the code since serialization is synchronous.
 

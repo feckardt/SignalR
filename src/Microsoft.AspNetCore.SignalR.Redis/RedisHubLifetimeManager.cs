@@ -153,13 +153,13 @@ namespace Microsoft.AspNetCore.SignalR.Redis
 
         public override Task SendAllAsync(string methodName, object[] args)
         {
-            var message = RedisProtocol.WriteInvocation(RedisInvocation.Create(methodName, args), _hubProtocols);
+            var message = RedisProtocol.WriteInvocation(methodName, args, _hubProtocols);
             return PublishAsync(_channels.All, message);
         }
 
         public override Task SendAllExceptAsync(string methodName, object[] args, IReadOnlyList<string> excludedIds)
         {
-            var message = RedisProtocol.WriteInvocation(RedisInvocation.Create(methodName, args, excludedIds), _hubProtocols);
+            var message = RedisProtocol.WriteInvocation(methodName, args, excludedIds, _hubProtocols);
             return PublishAsync(_channels.All, message);
         }
 
@@ -178,7 +178,7 @@ namespace Microsoft.AspNetCore.SignalR.Redis
                 return SafeWriteAsync(connection, new InvocationMessage(methodName, argumentBindingException: null, args));
             }
 
-            var message = RedisProtocol.WriteInvocation(RedisInvocation.Create(methodName, args), _hubProtocols);
+            var message = RedisProtocol.WriteInvocation(methodName, args, _hubProtocols);
             return PublishAsync(_channels.Connection(connectionId), message);
         }
 
@@ -189,7 +189,7 @@ namespace Microsoft.AspNetCore.SignalR.Redis
                 throw new ArgumentNullException(nameof(groupName));
             }
 
-            var message = RedisProtocol.WriteInvocation(RedisInvocation.Create(methodName, args), _hubProtocols);
+            var message = RedisProtocol.WriteInvocation(methodName, args, _hubProtocols);
             return PublishAsync(_channels.Group(groupName), message);
         }
 
@@ -200,13 +200,13 @@ namespace Microsoft.AspNetCore.SignalR.Redis
                 throw new ArgumentNullException(nameof(groupName));
             }
 
-            var message = RedisProtocol.WriteInvocation(RedisInvocation.Create(methodName, args, excludedIds), _hubProtocols);
+            var message = RedisProtocol.WriteInvocation(methodName, args, excludedIds, _hubProtocols);
             return PublishAsync(_channels.Group(groupName), message);
         }
 
         public override Task SendUserAsync(string userId, string methodName, object[] args)
         {
-            var message = RedisProtocol.WriteInvocation(RedisInvocation.Create(methodName, args), _hubProtocols);
+            var message = RedisProtocol.WriteInvocation(methodName, args, _hubProtocols);
             return PublishAsync(_channels.User(userId), message);
         }
 
@@ -263,29 +263,13 @@ namespace Microsoft.AspNetCore.SignalR.Redis
             {
                 throw new ArgumentNullException(nameof(connectionIds));
             }
-            var publishTasks = new List<Task>(connectionIds.Count);
-            var invocation = RedisInvocation.Create(methodName, args);
 
-            byte[] payload = null;
+            var publishTasks = new List<Task>(connectionIds.Count);
+            var payload = RedisProtocol.WriteInvocation(methodName, args, _hubProtocols);
 
             foreach (string connectionId in connectionIds)
             {
-                var connection = _connections[connectionId];
-                // If the connection is local we can skip sending the message through the bus since we require sticky connections.
-                // This also saves serializing and deserializing the message!
-                if (connection != null)
-                {
-                    publishTasks.Add(SafeWriteAsync(connection, invocation.Message));
-                }
-                else
-                {
-                    if (payload == null)
-                    {
-                        payload = RedisProtocol.WriteInvocation(invocation, _hubProtocols);
-                    }
-
-                    publishTasks.Add(PublishAsync(_channels.Connection(connectionId), payload));
-                }
+                publishTasks.Add(PublishAsync(_channels.Connection(connectionId), payload));
             }
 
             return Task.WhenAll(publishTasks);
@@ -298,7 +282,7 @@ namespace Microsoft.AspNetCore.SignalR.Redis
                 throw new ArgumentNullException(nameof(groupNames));
             }
             var publishTasks = new List<Task>(groupNames.Count);
-            var payload = RedisProtocol.WriteInvocation(RedisInvocation.Create(methodName, args), _hubProtocols);
+            var payload = RedisProtocol.WriteInvocation(methodName, args, _hubProtocols);
 
             foreach (var groupName in groupNames)
             {
@@ -315,7 +299,7 @@ namespace Microsoft.AspNetCore.SignalR.Redis
         {
             if (userIds.Count > 0)
             {
-                var payload = RedisProtocol.WriteInvocation(RedisInvocation.Create(methodName, args), _hubProtocols);
+                var payload = RedisProtocol.WriteInvocation(methodName, args, _hubProtocols);
                 var publishTasks = new List<Task>(userIds.Count);
                 foreach (var userId in userIds)
                 {
@@ -457,7 +441,7 @@ namespace Microsoft.AspNetCore.SignalR.Redis
 
                     foreach (var connection in _connections)
                     {
-                        if (invocation.ExcludedIds == null || invocation.ExcludedIds.Contains(connection.ConnectionId))
+                        if (invocation.ExcludedIds == null || !invocation.ExcludedIds.Contains(connection.ConnectionId))
                         {
                             tasks.Add(SafeWriteAsync(connection, invocation.Message));
                         }
@@ -574,7 +558,7 @@ namespace Microsoft.AspNetCore.SignalR.Redis
         }
 
         // This methods are to protect against connections throwing synchronously when writing to them and preventing other connections from being written to
-        private async Task SafeWriteAsync(HubConnectionContext connection, HubMessageSerializationCache message)
+        private async Task SafeWriteAsync(HubConnectionContext connection, SerializedHubMessage message)
         {
             try
             {

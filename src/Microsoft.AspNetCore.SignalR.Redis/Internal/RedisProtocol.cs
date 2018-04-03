@@ -26,21 +26,24 @@ namespace Microsoft.AspNetCore.SignalR.Redis.Internal
         // * The "Length prefixed string" is the string format used by BinaryReader/BinaryWriter:
         //   * A 7-bit variable length integer encodes the length in bytes, followed by the encoded string in UTF-8.
 
-        public static byte[] WriteInvocation(RedisInvocation invocation, IReadOnlyList<IHubProtocol> protocols)
+        public static byte[] WriteInvocation(string methodName, object[] args, IReadOnlyList<IHubProtocol> protocols) =>
+            WriteInvocation(methodName, args, excludedIds: null, protocols);
+
+        public static byte[] WriteInvocation(string methodName, object[] args, IReadOnlyList<string> excludedIds, IReadOnlyList<IHubProtocol> protocols)
         {
             // Redis Invocation Format:
             // * Variable length integer: Number of excluded Ids
             // * For each excluded Id:
             //   * Length prefixed string: ID
-            // * HubMessageSerializationCache encoded by the format described by that type.
+            // * SerializedHubMessage encoded by the format described by that type.
 
             using (var stream = new MemoryStream())
             using (var writer = new BinaryWriterWithVarInt(stream, _utf8NoBom))
             {
-                if (invocation.ExcludedIds != null)
+                if (excludedIds != null)
                 {
-                    writer.WriteVarInt(invocation.ExcludedIds.Count);
-                    foreach (var id in invocation.ExcludedIds)
+                    writer.WriteVarInt(excludedIds.Count);
+                    foreach (var id in excludedIds)
                     {
                         writer.Write(id);
                     }
@@ -50,7 +53,7 @@ namespace Microsoft.AspNetCore.SignalR.Redis.Internal
                     writer.WriteVarInt(0);
                 }
 
-                invocation.Message.WriteAllSerializedVersions(writer, protocols);
+                SerializedHubMessage.WriteAllSerializedVersions(writer, new InvocationMessage(methodName, argumentBindingException: null, args), protocols);
                 return stream.ToArray();
             }
         }
@@ -110,7 +113,7 @@ namespace Microsoft.AspNetCore.SignalR.Redis.Internal
                     excludedIds = ids;
                 }
 
-                var message = HubMessageSerializationCache.ReadAllSerializedVersions(reader);
+                var message = SerializedHubMessage.ReadAllSerializedVersions(reader);
                 return new RedisInvocation(message, excludedIds);
             }
         }

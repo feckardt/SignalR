@@ -13,7 +13,7 @@ namespace Microsoft.AspNetCore.SignalR.Internal
     /// This class is designed to support the framework. The API is subject to breaking changes.
     /// Represents a serialization cache for a single message.
     /// </summary>
-    public class HubMessageSerializationCache
+    public class SerializedHubMessage
     {
         private SerializedMessage _cachedItem1;
         private SerializedMessage _cachedItem2;
@@ -21,11 +21,11 @@ namespace Microsoft.AspNetCore.SignalR.Internal
 
         public HubMessage Message { get; }
 
-        private HubMessageSerializationCache()
+        private SerializedHubMessage()
         {
         }
 
-        public HubMessageSerializationCache(HubMessage message)
+        public SerializedHubMessage(HubMessage message)
         {
             Message = message;
         }
@@ -47,7 +47,7 @@ namespace Microsoft.AspNetCore.SignalR.Internal
             return serialized;
         }
 
-        public void WriteAllSerializedVersions(BinaryWriter writer, IReadOnlyList<IHubProtocol> protocols)
+        public static void WriteAllSerializedVersions(BinaryWriter writer, HubMessage message, IReadOnlyList<IHubProtocol> protocols)
         {
             // The serialization format is based on BinaryWriter
             // * 1 byte number of protocols
@@ -66,22 +66,15 @@ namespace Microsoft.AspNetCore.SignalR.Internal
             {
                 writer.Write(protocol.Name);
 
-                var buffer = GetSerializedMessage(protocol);
+                var buffer = protocol.WriteToArray(message);
                 writer.Write(buffer.Length);
-#if NETCOREAPP2_1
-                writer.Write(buffer.Span);
-#else
-                // We always use arrays so this should always succeed.
-                var isArray = MemoryMarshal.TryGetArray(buffer, out var arraySegment);
-                Debug.Assert(isArray);
-                writer.Write(arraySegment.Array, arraySegment.Offset, arraySegment.Count);
-#endif
+                writer.Write(buffer);
             }
         }
 
-        public static HubMessageSerializationCache ReadAllSerializedVersions(BinaryReader reader)
+        public static SerializedHubMessage ReadAllSerializedVersions(BinaryReader reader)
         {
-            var cache = new HubMessageSerializationCache();
+            var cache = new SerializedHubMessage();
             var count = reader.ReadByte();
             for (var i = 0; i < count; i++)
             {

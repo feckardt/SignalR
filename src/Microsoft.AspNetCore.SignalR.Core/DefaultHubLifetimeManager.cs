@@ -211,9 +211,9 @@ namespace Microsoft.AspNetCore.SignalR
             return Task.CompletedTask;
         }
 
-        private HubMessageSerializationCache CreateInvocationMessage(string methodName, object[] args)
+        private SerializedHubMessage CreateInvocationMessage(string methodName, object[] args)
         {
-            return new HubMessageSerializationCache(new InvocationMessage(target: methodName, argumentBindingException: null, arguments: args));
+            return new SerializedHubMessage(new InvocationMessage(target: methodName, argumentBindingException: null, arguments: args));
         }
 
         public override Task SendUserAsync(string userId, string methodName, object[] args)
