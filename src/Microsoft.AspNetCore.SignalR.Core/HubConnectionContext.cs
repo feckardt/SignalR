@@ -70,7 +70,7 @@ namespace Microsoft.AspNetCore.SignalR
 
         public virtual PipeReader Input => _connectionContext.Transport.Input;
 
-        public string UserIdentifier { get; internal set; }
+        public string UserIdentifier { get; set; }
 
         internal virtual IHubProtocol Protocol { get; set; }
 

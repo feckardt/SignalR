@@ -6,7 +6,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="..\..\src\Common\DuplexPipe.cs" Link="DuplexPipe.cs" />
     <Compile Include="..\..\test\Microsoft.AspNetCore.SignalR.Redis.Tests\TestConnectionMultiplexer.cs" Link="TestConnectionMultiplexer.cs" />
   </ItemGroup>
 
