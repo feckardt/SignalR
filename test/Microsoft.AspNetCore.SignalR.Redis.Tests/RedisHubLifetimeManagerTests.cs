@@ -23,10 +23,12 @@ namespace Microsoft.AspNetCore.SignalR.Redis.Tests
         [Fact]
         public async Task InvokeAllAsyncWritesToAllConnectionsOutput()
         {
+            var server = new TestRedisServer();
+
             using (var client1 = new TestClient())
             using (var client2 = new TestClient())
             {
-                var manager = CreateLifetimeManager();
+                var manager = CreateLifetimeManager(server);
                 var connection1 = HubConnectionContextUtils.Create(client1.Connection);
                 var connection2 = HubConnectionContextUtils.Create(client2.Connection);
 
@@ -43,13 +45,15 @@ namespace Microsoft.AspNetCore.SignalR.Redis.Tests
         [Fact]
         public async Task InvokeAllExceptAsyncExcludesSpecifiedConnections()
         {
+            var server = new TestRedisServer();
+
             using (var client1 = new TestClient())
             using (var client2 = new TestClient())
             using (var client3 = new TestClient())
             {
-                var manager1 = CreateLifetimeManager();
-                var manager2 = CreateLifetimeManager();
-                var manager3 = CreateLifetimeManager();
+                var manager1 = CreateLifetimeManager(server);
+                var manager2 = CreateLifetimeManager(server);
+                var manager3 = CreateLifetimeManager(server);
 
                 var connection1 = HubConnectionContextUtils.Create(client1.Connection);
                 var connection2 = HubConnectionContextUtils.Create(client2.Connection);
@@ -70,10 +74,12 @@ namespace Microsoft.AspNetCore.SignalR.Redis.Tests
         [Fact]
         public async Task InvokeAllAsyncDoesNotWriteToDisconnectedConnectionsOutput()
         {
+            var server = new TestRedisServer();
+
             using (var client1 = new TestClient())
             using (var client2 = new TestClient())
             {
-                var manager = CreateLifetimeManager();
+                var manager = CreateLifetimeManager(server);
                 var connection1 = HubConnectionContextUtils.Create(client1.Connection);
                 var connection2 = HubConnectionContextUtils.Create(client2.Connection);
 
@@ -93,10 +99,12 @@ namespace Microsoft.AspNetCore.SignalR.Redis.Tests
         [Fact]
         public async Task InvokeGroupAsyncWritesToAllConnectionsInGroupOutput()
         {
+            var server = new TestRedisServer();
+
             using (var client1 = new TestClient())
             using (var client2 = new TestClient())
             {
-                var manager = CreateLifetimeManager();
+                var manager = CreateLifetimeManager(server);
                 var connection1 = HubConnectionContextUtils.Create(client1.Connection);
                 var connection2 = HubConnectionContextUtils.Create(client2.Connection);
 
@@ -115,10 +123,12 @@ namespace Microsoft.AspNetCore.SignalR.Redis.Tests
         [Fact]
         public async Task InvokeGroupExceptAsyncWritesToAllValidConnectionsInGroupOutput()
         {
+            var server = new TestRedisServer();
+
             using (var client1 = new TestClient())
             using (var client2 = new TestClient())
             {
-                var manager = CreateLifetimeManager();
+                var manager = CreateLifetimeManager(server);
                 var connection1 = HubConnectionContextUtils.Create(client1.Connection);
                 var connection2 = HubConnectionContextUtils.Create(client2.Connection);
 
@@ -139,9 +149,11 @@ namespace Microsoft.AspNetCore.SignalR.Redis.Tests
         [Fact]
         public async Task InvokeConnectionAsyncWritesToConnectionOutput()
         {
+            var server = new TestRedisServer();
+
             using (var client = new TestClient())
             {
-                var manager = CreateLifetimeManager();
+                var manager = CreateLifetimeManager(server);
                 var connection = HubConnectionContextUtils.Create(client.Connection);
 
                 await manager.OnConnectedAsync(connection).OrTimeout();
@@ -155,15 +167,19 @@ namespace Microsoft.AspNetCore.SignalR.Redis.Tests
         [Fact]
         public async Task InvokeConnectionAsyncOnNonExistentConnectionDoesNotThrow()
         {
-            var manager = CreateLifetimeManager();
+            var server = new TestRedisServer();
+
+            var manager = CreateLifetimeManager(server);
             await manager.SendConnectionAsync("NotARealConnectionId", "Hello", new object[] { "World" }).OrTimeout();
         }
 
         [Fact]
         public async Task InvokeAllAsyncWithMultipleServersWritesToAllConnectionsOutput()
         {
-            var manager1 = CreateLifetimeManager();
-            var manager2 = CreateLifetimeManager();
+            var server = new TestRedisServer();
+
+            var manager1 = CreateLifetimeManager(server);
+            var manager2 = CreateLifetimeManager(server);
 
             using (var client1 = new TestClient())
             using (var client2 = new TestClient())
@@ -184,8 +200,10 @@ namespace Microsoft.AspNetCore.SignalR.Redis.Tests
         [Fact]
         public async Task InvokeAllAsyncWithMultipleServersDoesNotWriteToDisconnectedConnectionsOutput()
         {
-            var manager1 = CreateLifetimeManager();
-            var manager2 = CreateLifetimeManager();
+            var server = new TestRedisServer();
+
+            var manager1 = CreateLifetimeManager(server);
+            var manager2 = CreateLifetimeManager(server);
 
             using (var client1 = new TestClient())
             using (var client2 = new TestClient())
@@ -209,8 +227,10 @@ namespace Microsoft.AspNetCore.SignalR.Redis.Tests
         [Fact]
         public async Task InvokeConnectionAsyncOnServerWithoutConnectionWritesOutputToConnection()
         {
-            var manager1 = CreateLifetimeManager();
-            var manager2 = CreateLifetimeManager();
+            var server = new TestRedisServer();
+
+            var manager1 = CreateLifetimeManager(server);
+            var manager2 = CreateLifetimeManager(server);
 
             using (var client = new TestClient())
             {
@@ -227,8 +247,10 @@ namespace Microsoft.AspNetCore.SignalR.Redis.Tests
         [Fact]
         public async Task InvokeGroupAsyncOnServerWithoutConnectionWritesOutputToGroupConnection()
         {
-            var manager1 = CreateLifetimeManager();
-            var manager2 = CreateLifetimeManager();
+            var server = new TestRedisServer();
+
+            var manager1 = CreateLifetimeManager(server);
+            var manager2 = CreateLifetimeManager(server);
 
             using (var client = new TestClient())
             {
@@ -247,7 +269,9 @@ namespace Microsoft.AspNetCore.SignalR.Redis.Tests
         [Fact]
         public async Task DisconnectConnectionRemovesConnectionFromGroup()
         {
-            var manager = CreateLifetimeManager();
+            var server = new TestRedisServer();
+
+            var manager = CreateLifetimeManager(server);
 
             using (var client = new TestClient())
             {
@@ -268,7 +292,9 @@ namespace Microsoft.AspNetCore.SignalR.Redis.Tests
         [Fact]
         public async Task RemoveGroupFromLocalConnectionNotInGroupDoesNothing()
         {
-            var manager = CreateLifetimeManager();
+            var server = new TestRedisServer();
+
+            var manager = CreateLifetimeManager(server);
 
             using (var client = new TestClient())
             {
@@ -283,8 +309,10 @@ namespace Microsoft.AspNetCore.SignalR.Redis.Tests
         [Fact]
         public async Task RemoveGroupFromConnectionOnDifferentServerNotInGroupDoesNothing()
         {
-            var manager1 = CreateLifetimeManager();
-            var manager2 = CreateLifetimeManager();
+            var server = new TestRedisServer();
+
+            var manager1 = CreateLifetimeManager(server);
+            var manager2 = CreateLifetimeManager(server);
 
             using (var client = new TestClient())
             {
@@ -299,8 +327,10 @@ namespace Microsoft.AspNetCore.SignalR.Redis.Tests
         [Fact]
         public async Task AddGroupAsyncForConnectionOnDifferentServerWorks()
         {
-            var manager1 = CreateLifetimeManager();
-            var manager2 = CreateLifetimeManager();
+            var server = new TestRedisServer();
+
+            var manager1 = CreateLifetimeManager(server);
+            var manager2 = CreateLifetimeManager(server);
 
             using (var client = new TestClient())
             {
@@ -319,7 +349,9 @@ namespace Microsoft.AspNetCore.SignalR.Redis.Tests
         [Fact]
         public async Task AddGroupAsyncForLocalConnectionAlreadyInGroupDoesNothing()
         {
-            var manager = CreateLifetimeManager();
+            var server = new TestRedisServer();
+
+            var manager = CreateLifetimeManager(server);
 
             using (var client = new TestClient())
             {
@@ -340,8 +372,10 @@ namespace Microsoft.AspNetCore.SignalR.Redis.Tests
         [Fact]
         public async Task AddGroupAsyncForConnectionOnDifferentServerAlreadyInGroupDoesNothing()
         {
-            var manager1 = CreateLifetimeManager();
-            var manager2 = CreateLifetimeManager();
+            var server = new TestRedisServer();
+
+            var manager1 = CreateLifetimeManager(server);
+            var manager2 = CreateLifetimeManager(server);
 
             using (var client = new TestClient())
             {
@@ -362,8 +396,10 @@ namespace Microsoft.AspNetCore.SignalR.Redis.Tests
         [Fact]
         public async Task RemoveGroupAsyncForConnectionOnDifferentServerWorks()
         {
-            var manager1 = CreateLifetimeManager();
-            var manager2 = CreateLifetimeManager();
+            var server = new TestRedisServer();
+
+            var manager1 = CreateLifetimeManager(server);
+            var manager2 = CreateLifetimeManager(server);
 
             using (var client = new TestClient())
             {
@@ -388,8 +424,10 @@ namespace Microsoft.AspNetCore.SignalR.Redis.Tests
         [Fact]
         public async Task InvokeConnectionAsyncForLocalConnectionDoesNotPublishToRedis()
         {
-            var manager1 = CreateLifetimeManager();
-            var manager2 = CreateLifetimeManager();
+            var server = new TestRedisServer();
+
+            var manager1 = CreateLifetimeManager(server);
+            var manager2 = CreateLifetimeManager(server);
 
             using (var client = new TestClient())
             {
@@ -409,8 +447,10 @@ namespace Microsoft.AspNetCore.SignalR.Redis.Tests
         [Fact]
         public async Task WritingToRemoteConnectionThatFailsDoesNotThrow()
         {
-            var manager1 = CreateLifetimeManager();
-            var manager2 = CreateLifetimeManager();
+            var server = new TestRedisServer();
+
+            var manager1 = CreateLifetimeManager(server);
+            var manager2 = CreateLifetimeManager(server);
 
             using (var client = new TestClient())
             {
@@ -430,7 +470,9 @@ namespace Microsoft.AspNetCore.SignalR.Redis.Tests
         [Fact]
         public async Task WritingToLocalConnectionThatFailsDoesNotThrowException()
         {
-            var manager = CreateLifetimeManager();
+            var server = new TestRedisServer();
+
+            var manager = CreateLifetimeManager(server);
 
             using (var client = new TestClient())
             {
@@ -448,7 +490,9 @@ namespace Microsoft.AspNetCore.SignalR.Redis.Tests
         [Fact]
         public async Task WritingToGroupWithOneConnectionFailingSecondConnectionStillReceivesMessage()
         {
-            var manager = CreateLifetimeManager();
+            var server = new TestRedisServer();
+
+            var manager = CreateLifetimeManager(server);
 
             using (var client1 = new TestClient())
             using (var client2 = new TestClient())
@@ -479,6 +523,8 @@ namespace Microsoft.AspNetCore.SignalR.Redis.Tests
         [Fact]
         public async Task CamelCasedJsonIsPreservedAcrossRedisBoundary()
         {
+            var server = new TestRedisServer();
+
             var messagePackOptions = new MessagePackHubProtocolOptions();
             messagePackOptions.SerializationContext.DictionarySerlaizationOptions.KeyTransformer = DictionaryKeyTransformers.LowerCamel;
 
@@ -489,12 +535,10 @@ namespace Microsoft.AspNetCore.SignalR.Redis.Tests
             using (var client2 = new TestClient())
             {
                 // The sending manager has serializer settings
-                var manager1 = CreateLifetimeManager(
-                    messagePackOptions: messagePackOptions,
-                    jsonOptions: jsonOptions);
+                var manager1 = CreateLifetimeManager(server, messagePackOptions, jsonOptions);
 
                 // The receiving one doesn't matter because of how we serialize!
-                var manager2 = CreateLifetimeManager();
+                var manager2 = CreateLifetimeManager(server);
 
                 var connection1 = HubConnectionContextUtils.Create(client1.Connection);
                 var connection2 = HubConnectionContextUtils.Create(client2.Connection);
@@ -526,9 +570,9 @@ namespace Microsoft.AspNetCore.SignalR.Redis.Tests
             public string TestProperty { get; set; }
         }
 
-        private RedisHubLifetimeManager<MyHub> CreateLifetimeManager(MessagePackHubProtocolOptions messagePackOptions = null, JsonHubProtocolOptions jsonOptions = null)
+        private RedisHubLifetimeManager<MyHub> CreateLifetimeManager(TestRedisServer server, MessagePackHubProtocolOptions messagePackOptions = null, JsonHubProtocolOptions jsonOptions = null)
         {
-            var options = new RedisOptions() { Factory = t => new TestConnectionMultiplexer() };
+            var options = new RedisOptions() { Factory = t => new TestConnectionMultiplexer(server) };
             messagePackOptions = messagePackOptions ?? new MessagePackHubProtocolOptions();
             jsonOptions = jsonOptions ?? new JsonHubProtocolOptions();
 
