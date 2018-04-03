@@ -69,7 +69,7 @@ namespace Microsoft.AspNetCore.SignalR.Internal
                 var buffer = GetSerializedMessage(protocol);
                 writer.Write(buffer.Length);
 #if NETCOREAPP2_1
-                writer.Write(buffer);
+                writer.Write(buffer.Span);
 #else
                 // We always use arrays so this should always succeed.
                 var isArray = MemoryMarshal.TryGetArray(buffer, out var arraySegment);

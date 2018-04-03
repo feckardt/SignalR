@@ -30,6 +30,7 @@ namespace Microsoft.AspNetCore.SignalR.Redis
         private readonly RedisOptions _options;
         private readonly RedisChannels _channels;
         private readonly string _serverName = GenerateServerName();
+        private readonly IReadOnlyList<IHubProtocol> _hubProtocols;
 
         private readonly AckHandler _ackHandler;
         private int _internalId;
@@ -42,15 +43,17 @@ namespace Microsoft.AspNetCore.SignalR.Redis
         };
 
         public RedisHubLifetimeManager(ILogger<RedisHubLifetimeManager<THub>> logger,
-                                       IOptions<RedisOptions> options)
+                                       IOptions<RedisOptions> options,
+                                       IHubProtocolResolver hubProtocolResolver)
         {
             _logger = logger;
             _options = options.Value;
             _ackHandler = new AckHandler();
             _channels = new RedisChannels(typeof(THub).FullName);
+            _hubProtocols = hubProtocolResolver.AllProtocols;
 
             var writer = new LoggerTextWriter(logger);
-            Log.ConnectingToEndpoints(_logger, options.Value.Options.EndPoints, _serverName);
+            RedisLog.ConnectingToEndpoints(_logger, options.Value.Options.EndPoints, _serverName);
             _redisServerConnection = _options.Connect(writer);
 
             _redisServerConnection.ConnectionRestored += (_, e) =>
@@ -62,7 +65,7 @@ namespace Microsoft.AspNetCore.SignalR.Redis
                     return;
                 }
 
-                Log.ConnectionRestored(_logger);
+                RedisLog.ConnectionRestored(_logger);
             };
 
             _redisServerConnection.ConnectionFailed += (_, e) =>
@@ -74,16 +77,16 @@ namespace Microsoft.AspNetCore.SignalR.Redis
                     return;
                 }
 
-                Log.ConnectionFailed(_logger, e.Exception);
+                RedisLog.ConnectionFailed(_logger, e.Exception);
             };
 
             if (_redisServerConnection.IsConnected)
             {
-                Log.Connected(_logger);
+                RedisLog.Connected(_logger);
             }
             else
             {
-                Log.NotConnected(_logger);
+                RedisLog.NotConnected(_logger);
             }
             _bus = _redisServerConnection.GetSubscriber();
 
@@ -126,7 +129,7 @@ namespace Microsoft.AspNetCore.SignalR.Redis
             {
                 foreach (var subscription in redisSubscriptions)
                 {
-                    Log.Unsubscribe(_logger, subscription);
+                    RedisLog.Unsubscribe(_logger, subscription);
                     tasks.Add(_bus.UnsubscribeAsync(subscription));
                 }
             }
@@ -150,13 +153,13 @@ namespace Microsoft.AspNetCore.SignalR.Redis
 
         public override Task SendAllAsync(string methodName, object[] args)
         {
-            var message = RedisProtocol.WriteInvocation(RedisInvocation.Create(methodName, args));
+            var message = RedisProtocol.WriteInvocation(RedisInvocation.Create(methodName, args), _hubProtocols);
             return PublishAsync(_channels.All, message);
         }
 
         public override Task SendAllExceptAsync(string methodName, object[] args, IReadOnlyList<string> excludedIds)
         {
-            var message = RedisProtocol.WriteInvocation(RedisInvocation.Create(methodName, args, excludedIds));
+            var message = RedisProtocol.WriteInvocation(RedisInvocation.Create(methodName, args, excludedIds), _hubProtocols);
             return PublishAsync(_channels.All, message);
         }
 
@@ -175,7 +178,7 @@ namespace Microsoft.AspNetCore.SignalR.Redis
                 return SafeWriteAsync(connection, new InvocationMessage(methodName, argumentBindingException: null, args));
             }
 
-            var message = RedisProtocol.WriteInvocation(RedisInvocation.Create(methodName, args));
+            var message = RedisProtocol.WriteInvocation(RedisInvocation.Create(methodName, args), _hubProtocols);
             return PublishAsync(_channels.Connection(connectionId), message);
         }
 
@@ -186,7 +189,7 @@ namespace Microsoft.AspNetCore.SignalR.Redis
                 throw new ArgumentNullException(nameof(groupName));
             }
 
-            var message = RedisProtocol.WriteInvocation(RedisInvocation.Create(methodName, args));
+            var message = RedisProtocol.WriteInvocation(RedisInvocation.Create(methodName, args), _hubProtocols);
             return PublishAsync(_channels.Group(groupName), message);
         }
 
@@ -197,13 +200,13 @@ namespace Microsoft.AspNetCore.SignalR.Redis
                 throw new ArgumentNullException(nameof(groupName));
             }
 
-            var message = RedisProtocol.WriteInvocation(RedisInvocation.Create(methodName, args, excludedIds));
+            var message = RedisProtocol.WriteInvocation(RedisInvocation.Create(methodName, args, excludedIds), _hubProtocols);
             return PublishAsync(_channels.Group(groupName), message);
         }
 
         public override Task SendUserAsync(string userId, string methodName, object[] args)
         {
-            var message = RedisProtocol.WriteInvocation(RedisInvocation.Create(methodName, args));
+            var message = RedisProtocol.WriteInvocation(RedisInvocation.Create(methodName, args), _hubProtocols);
             return PublishAsync(_channels.User(userId), message);
         }
 
@@ -278,7 +281,7 @@ namespace Microsoft.AspNetCore.SignalR.Redis
                 {
                     if (payload == null)
                     {
-                        payload = RedisProtocol.WriteInvocation(invocation);
+                        payload = RedisProtocol.WriteInvocation(invocation, _hubProtocols);
                     }
 
                     publishTasks.Add(PublishAsync(_channels.Connection(connectionId), payload));
@@ -295,7 +298,7 @@ namespace Microsoft.AspNetCore.SignalR.Redis
                 throw new ArgumentNullException(nameof(groupNames));
             }
             var publishTasks = new List<Task>(groupNames.Count);
-            var payload = RedisProtocol.WriteInvocation(RedisInvocation.Create(methodName, args));
+            var payload = RedisProtocol.WriteInvocation(RedisInvocation.Create(methodName, args), _hubProtocols);
 
             foreach (var groupName in groupNames)
             {
@@ -312,7 +315,7 @@ namespace Microsoft.AspNetCore.SignalR.Redis
         {
             if (userIds.Count > 0)
             {
-                var payload = RedisProtocol.WriteInvocation(RedisInvocation.Create(methodName, args));
+                var payload = RedisProtocol.WriteInvocation(RedisInvocation.Create(methodName, args), _hubProtocols);
                 var publishTasks = new List<Task>(userIds.Count);
                 foreach (var userId in userIds)
                 {
@@ -330,7 +333,7 @@ namespace Microsoft.AspNetCore.SignalR.Redis
 
         private async Task PublishAsync(string channel, byte[] payload)
         {
-            Log.PublishToChannel(_logger, channel);
+            RedisLog.PublishToChannel(_logger, channel);
             await _bus.PublishAsync(channel, payload);
         }
 
@@ -349,7 +352,7 @@ namespace Microsoft.AspNetCore.SignalR.Redis
             }
 
             var groupChannel = _channels.Group(groupName);
-            var group = _groups.GetOrAdd(groupName, _ => new GroupData());
+            var group = _groups.GetOrAdd(groupChannel, _ => new GroupData());
 
             await group.Lock.WaitAsync();
             try
@@ -402,7 +405,7 @@ namespace Microsoft.AspNetCore.SignalR.Redis
 
                     if (group.Connections.Count == 0)
                     {
-                        Log.Unsubscribe(_logger, groupChannel);
+                        RedisLog.Unsubscribe(_logger, groupChannel);
                         await _bus.UnsubscribeAsync(groupChannel);
                     }
                 }
@@ -441,12 +444,12 @@ namespace Microsoft.AspNetCore.SignalR.Redis
 
         private void SubscribeToAll()
         {
-            Log.Subscribing(_logger, _channels.All);
+            RedisLog.Subscribing(_logger, _channels.All);
             _bus.Subscribe(_channels.All, async (c, data) =>
             {
                 try
                 {
-                    Log.ReceivedFromChannel(_logger, _channels.All);
+                    RedisLog.ReceivedFromChannel(_logger, _channels.All);
 
                     var invocation = RedisProtocol.ReadInvocation(data);
 
@@ -464,7 +467,7 @@ namespace Microsoft.AspNetCore.SignalR.Redis
                 }
                 catch (Exception ex)
                 {
-                    Log.FailedWritingMessage(_logger, ex);
+                    RedisLog.FailedWritingMessage(_logger, ex);
                 }
             });
         }
@@ -499,7 +502,7 @@ namespace Microsoft.AspNetCore.SignalR.Redis
                 }
                 catch (Exception ex)
                 {
-                    Log.InternalMessageFailed(_logger, ex);
+                    RedisLog.InternalMessageFailed(_logger, ex);
                 }
             });
         }
@@ -520,7 +523,7 @@ namespace Microsoft.AspNetCore.SignalR.Redis
             var connectionChannel = _channels.Connection(connection.ConnectionId);
             redisSubscriptions.Add(connectionChannel);
 
-            Log.Subscribing(_logger, connectionChannel);
+            RedisLog.Subscribing(_logger, connectionChannel);
             return _bus.SubscribeAsync(connectionChannel, async (c, data) =>
             {
                 var invocation = RedisProtocol.ReadInvocation(data);
@@ -543,7 +546,7 @@ namespace Microsoft.AspNetCore.SignalR.Redis
 
         private Task SubscribeToGroup(string groupChannel, GroupData group)
         {
-            Log.Subscribing(_logger, groupChannel);
+            RedisLog.Subscribing(_logger, groupChannel);
             return _bus.SubscribeAsync(groupChannel, async (c, data) =>
             {
                 try
@@ -565,7 +568,7 @@ namespace Microsoft.AspNetCore.SignalR.Redis
                 }
                 catch (Exception ex)
                 {
-                    Log.FailedWritingMessage(_logger, ex);
+                    RedisLog.FailedWritingMessage(_logger, ex);
                 }
             });
         }
@@ -579,7 +582,7 @@ namespace Microsoft.AspNetCore.SignalR.Redis
             }
             catch (Exception ex)
             {
-                Log.FailedWritingMessage(_logger, ex);
+                RedisLog.FailedWritingMessage(_logger, ex);
             }
         }
 
@@ -591,7 +594,7 @@ namespace Microsoft.AspNetCore.SignalR.Redis
             }
             catch (Exception ex)
             {
-                Log.FailedWritingMessage(_logger, ex);
+                RedisLog.FailedWritingMessage(_logger, ex);
             }
         }
 
@@ -620,7 +623,7 @@ namespace Microsoft.AspNetCore.SignalR.Redis
 
             public override void WriteLine(string value)
             {
-                Log.ConnectionMultiplexerMessage(_logger, value);
+                RedisLog.ConnectionMultiplexerMessage(_logger, value);
             }
         }
 

@@ -27,8 +27,8 @@ namespace SignalRSamples
             .AddMessagePackProtocol(options =>
             {
                 options.SerializationContext.DictionarySerlaizationOptions.KeyTransformer = DictionaryKeyTransformers.LowerCamel;
-            });
-            // .AddRedis();
+            })
+            .AddRedis();
 
             services.AddCors(o =>
             {

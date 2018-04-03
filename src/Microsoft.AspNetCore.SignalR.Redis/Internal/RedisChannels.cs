@@ -64,7 +64,7 @@ namespace Microsoft.AspNetCore.SignalR.Redis.Internal
         /// <returns></returns>
         public string Ack(string serverName)
         {
-            return $"{_prefix}:internal:ack:{serverId}";
+            return $"{_prefix}:internal:ack:{serverName}";
         }
     }
 }
